@@ -1,16 +1,52 @@
-# React + Vite
+# NILM Frontend Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite dashboard connected to the NILM FastAPI backend.
 
-Currently, two official plugins are available:
+## What It Shows
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Real-time meter stream from `ws://.../ws/readings`
+- 1-second sync from:
+	- `GET /api/v1/readings/recent`
+	- `GET /api/v1/disaggregation/recent`
+- KPI cards for power, energy, power factor, and active loads
+- Trend charts for power quality and energy profile
+- Appliance split visualizations and recent reading table
 
-## React Compiler
+## Backend Fields Used
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `device_id`
+- `meter_id`
+- `site_id`
+- `timestamp`
+- `received_at`
+- `voltage_v`
+- `current_a`
+- `power_w`
+- `energy_kwh`
+- `frequency_hz`
+- `power_factor`
+- Disaggregation: `appliance_id`, `appliance_label`, `power_w`, `energy_kwh`
 
-## Expanding the ESLint configuration
+## Run Locally
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npm install
+npm run dev
+```
+
+## Optional Environment Variables
+
+Create `.env` inside `frontend/` if backend is not running at `http://localhost:8000`:
+
+```bash
+VITE_API_BASE_URL=http://localhost:8000
+VITE_WS_URL=ws://localhost:8000/ws/readings
+```
+
+If `VITE_WS_URL` is not provided, the app auto-derives it from `VITE_API_BASE_URL`.
+
+## Build
+
+```bash
+npm run build
+```

@@ -87,5 +87,5 @@ void loop() {
 
   Serial.println("--------------------------");
 
-  delay(5000); // send every 5 sec
+  delay(1000); // send every 1 sec
 }

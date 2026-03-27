@@ -9,7 +9,7 @@
 ```
 ┌──────────────┐         POST /api/v1/readings         ┌─────────────────┐
 │  ESP32 +     │  ──────────────────────────────────►  │  FastAPI Backend │
-│  PZEM-004T   │         (every 5 seconds)             │                 │
+│  PZEM-004T   │         (every 1 second)              │                 │
 └──────────────┘                                       │  ┌───────────┐  │
                                                        │  │  SQLite   │  │
                                                        │  │  (store)  │  │
@@ -31,7 +31,7 @@
                                    └─────────────────────────────────────────────────────┘
 ```
 
-The ESP32 sends a JSON reading every 5 seconds. The backend:
+The ESP32 sends a JSON reading every 1 second. The backend:
 1. **Stores** it in SQLite
 2. **Broadcasts** it instantly to every connected WebSocket and SSE client
 
@@ -100,7 +100,7 @@ Open **http://localhost:8000/docs** for the interactive Swagger UI.
 
 ## ESP32 Payload Format
 
-The ESP32 firmware sends this JSON every 5 seconds — no `timestamp` or `raw` field needed (both are optional):
+The ESP32 firmware sends this JSON every 1 second — no `timestamp` or `raw` field needed (both are optional):
 
 ```json
 {
