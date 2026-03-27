@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database (auto-created at runtime)
+data/readings.db
+
+# Pytest
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db

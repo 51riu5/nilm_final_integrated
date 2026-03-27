@@ -1,78 +1,91 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
 #include <PZEM004Tv30.h>
 
-// For ESP32 XIAO C3, use hardware serial or software serial
-PZEM004Tv30 pzem(Serial1, 9, 10); // RX=GPIO9, TX=GPIO10
+// WiFi credentials
+const char* ssid = "Johan";
+const char* password = "12345678";
+
+// Your backend URL (CHANGE THIS)
+const char* serverName = "http://172.20.10.4:8000/api/v1/readings";
+
+// PZEM setup (ESP32 XIAO C3)
+PZEM004Tv30 pzem(Serial1, 9, 10); // RX=9, TX=10
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  
-  Serial.println("==============================");
-  Serial.println("PZEM-004T Energy Monitor");
-  Serial.println("by Johan Sergi");a
-  Serial.println("ESP32 XIAO C3 Version");
-  Serial.println("==============================");
-  Serial.println();
-  delay(500);
+
+  Serial.println("Connecting to WiFi...");
+
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void loop() {
-  Serial.println("--- Reading Sensor Data ---");
-  
+
+  // Read sensor values
   float voltage = pzem.voltage();
-  if (!isnan(voltage)) {
-    Serial.print("Voltage: ");
-    Serial.print(voltage);
-    Serial.println(" V");
-  } else {
-    Serial.println("Error reading voltage");
-  }
-  
   float current = pzem.current();
-  if (!isnan(current)) {
-    Serial.print("Current: ");
-    Serial.print(current);
-    Serial.println(" A");
-  } else {
-    Serial.println("Error reading current");
-  }
-  
   float power = pzem.power();
-  if (!isnan(power)) {
-    Serial.print("Power: ");
-    Serial.print(power);
-    Serial.println(" W");
-  } else {
-    Serial.println("Error reading power");
-  }
-  
   float energy = pzem.energy();
-  if (!isnan(energy)) {
-    Serial.print("Energy: ");
-    Serial.print(energy, 3);
-    Serial.println(" kWh");
-  } else {
-    Serial.println("Error reading energy");
-  }
-  
   float frequency = pzem.frequency();
-  if (!isnan(frequency)) {
-    Serial.print("Frequency: ");
-    Serial.print(frequency, 1);
-    Serial.println(" Hz");
-  } else {
-    Serial.println("Error reading frequency");
-  }
-  
   float pf = pzem.pf();
-  if (!isnan(pf)) {
-    Serial.print("Power Factor: ");
-    Serial.println(pf);
+
+  // Handle NaN values
+  if (isnan(voltage)) voltage = 0;
+  if (isnan(current)) current = 0;
+  if (isnan(power)) power = 0;
+  if (isnan(energy)) energy = 0;
+  if (isnan(frequency)) frequency = 0;
+  if (isnan(pf)) pf = 0;
+
+  Serial.println("Sending data...");
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    HTTPClient http;
+    http.begin(serverName);
+    http.addHeader("Content-Type", "application/json");
+
+    // JSON payload
+    String json = "{";
+    json += "\"device_id\":\"esp32_1\",";
+    json += "\"meter_id\":\"pzem_1\",";
+    json += "\"site_id\":\"home_1\",";
+    json += "\"voltage_v\":" + String(voltage) + ",";
+    json += "\"current_a\":" + String(current) + ",";
+    json += "\"power_w\":" + String(power) + ",";
+    json += "\"energy_kwh\":" + String(energy) + ",";
+    json += "\"frequency_hz\":" + String(frequency) + ",";
+    json += "\"power_factor\":" + String(pf);
+    json += "}";
+
+    // Send POST request
+    int httpResponseCode = http.POST(json);
+
+    Serial.print("HTTP Response: ");
+    Serial.println(httpResponseCode);
+
+    // Optional: print response
+    String response = http.getString();
+    Serial.println(response);
+
+    http.end();
+
   } else {
-    Serial.println("Error reading power factor");
+    Serial.println("WiFi Disconnected");
   }
-  
-  Serial.println("==============================");
-  Serial.println();
-  delay(2000);
+
+  Serial.println("--------------------------");
+
+  delay(5000); // send every 5 sec
 }
