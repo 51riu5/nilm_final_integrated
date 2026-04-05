@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import {
   Area,
   AreaChart,
@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 import {
   Activity,
+  BrainCircuit,
   Gauge,
   LoaderCircle,
   PlugZap,
@@ -36,6 +37,12 @@ const REFRESH_MS = 1000
 const DEFAULT_WINDOW = 60
 const MAX_BUFFERED_ROWS = 500
 const PIE_COLORS = ['#135d66', '#f26419', '#2d9c95', '#f2a541', '#5f6caf', '#d7263d']
+
+const APPLIANCE_COLORS = {
+  laptop_charger: '#f26419',
+  mobile_charger: '#2d9c95',
+  other: '#5f6caf',
+}
 
 function buildWsUrl(apiBaseUrl) {
   try {
@@ -128,10 +135,27 @@ function buildApplianceSnapshot(rows) {
   return [...latestPerAppliance.values()]
     .map((row) => ({
       name: row.appliance_label || row.appliance_id,
+      appliance_id: row.appliance_id,
       power_w: Number(row.power_w || 0),
       energy_kwh: Number(row.energy_kwh || 0),
     }))
     .sort((a, b) => b.power_w - a.power_w)
+}
+
+function buildApplianceTimeline(rows) {
+  const byTimestamp = new Map()
+  rows.forEach((row) => {
+    const ts = row.timestamp || row.received_at
+    if (!ts) return
+    const key = ts
+    const entry = byTimestamp.get(key) || { timestamp: ts, label: formatTime(ts) }
+    const appId = row.appliance_id || 'unknown'
+    entry[appId] = Number(row.power_w || 0)
+    byTimestamp.set(key, entry)
+  })
+  return [...byTimestamp.values()].sort(
+    (a, b) => toEpoch(a.timestamp) - toEpoch(b.timestamp),
+  ).slice(-120)
 }
 
 function App() {
@@ -144,9 +168,17 @@ function App() {
   const [isSyncing, setIsSyncing] = useState(true)
   const [errorText, setErrorText] = useState('')
   const [lastSyncedAt, setLastSyncedAt] = useState(null)
+  const [nilmStatus, setNilmStatus] = useState(null)
   const reconnectTimerRef = useRef(null)
 
   const syncRecentData = useRef(async () => {})
+
+  const fetchNilmStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/nilm/status`)
+      if (res.ok) setNilmStatus(await res.json())
+    } catch { /* ignore */ }
+  }, [])
 
   syncRecentData.current = async () => {
     try {
@@ -169,20 +201,20 @@ function App() {
 
   useEffect(() => {
     syncRecentData.current()
+    fetchNilmStatus()
     const interval = setInterval(() => {
       syncRecentData.current()
     }, REFRESH_MS)
-    return () => clearInterval(interval)
-  }, [])
+    const nilmInterval = setInterval(fetchNilmStatus, 5000)
+    return () => { clearInterval(interval); clearInterval(nilmInterval) }
+  }, [fetchNilmStatus])
 
   useEffect(() => {
     let isActive = true
     let socket
 
     const connect = () => {
-      if (!isActive) {
-        return
-      }
+      if (!isActive) return
 
       setConnectionState('connecting')
       socket = new WebSocket(WS_URL)
@@ -193,8 +225,12 @@ function App() {
 
       socket.onmessage = (event) => {
         try {
-          const next = JSON.parse(event.data)
-          setMeterReadings((prev) => mergeRows(prev, [next], readingKey))
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'disaggregation') {
+            setDisaggregatedReadings((prev) => mergeRows(prev, [msg], disaggregationKey))
+          } else {
+            setMeterReadings((prev) => mergeRows(prev, [msg], readingKey))
+          }
           setLastSyncedAt(new Date().toISOString())
           setErrorText('')
         } catch {
@@ -207,9 +243,7 @@ function App() {
       }
 
       socket.onclose = () => {
-        if (!isActive) {
-          return
-        }
+        if (!isActive) return
         setConnectionState('offline')
         reconnectTimerRef.current = setTimeout(connect, 2500)
       }
@@ -219,12 +253,8 @@ function App() {
 
     return () => {
       isActive = false
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current)
-      }
-      if (socket && socket.readyState <= 1) {
-        socket.close()
-      }
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      if (socket && socket.readyState <= 1) socket.close()
     }
   }, [])
 
@@ -256,7 +286,6 @@ function App() {
       setSelectedDevice('')
       return
     }
-
     const exists = deviceOptions.some((device) => device.device_id === selectedDevice)
     if (!exists) {
       setSelectedDevice(deviceOptions[0].device_id)
@@ -264,16 +293,12 @@ function App() {
   }, [deviceOptions, selectedDevice])
 
   const filteredReadings = useMemo(() => {
-    if (!selectedDevice) {
-      return []
-    }
+    if (!selectedDevice) return []
     return meterReadings.filter((row) => row.device_id === selectedDevice).slice(-limit)
   }, [meterReadings, selectedDevice, limit])
 
   const filteredDisaggregation = useMemo(() => {
-    if (!selectedDevice) {
-      return []
-    }
+    if (!selectedDevice) return []
     return disaggregatedReadings
       .filter((row) => row.device_id === selectedDevice)
       .slice(-(limit * 8))
@@ -293,31 +318,46 @@ function App() {
     [filteredDisaggregation],
   )
 
+  const applianceTimeline = useMemo(
+    () => buildApplianceTimeline(filteredDisaggregation),
+    [filteredDisaggregation],
+  )
+
   const latestReading = filteredReadings.at(-1)
 
+  const applianceLive = useMemo(() => {
+    const map = {}
+    applianceTotals.forEach((a) => { map[a.appliance_id] = a })
+    return map
+  }, [applianceTotals])
+
   const alertItems = useMemo(() => {
-    if (!latestReading) {
-      return []
-    }
+    if (!latestReading) return []
     const alerts = []
-    if (latestReading.power_w > 3200) {
-      alerts.push('High demand spike detected, check HVAC and kettle overlap.')
-    }
-    if (latestReading.power_factor < 0.82) {
+    if (latestReading.power_w > 150)
+      alerts.push('High aggregate draw detected — multiple devices may be active.')
+    if (latestReading.power_factor !== null && latestReading.power_factor < 0.82)
       alerts.push('Low power factor observed, investigate inductive loads.')
-    }
-    if (latestReading.frequency_hz < 49.9 || latestReading.frequency_hz > 50.1) {
+    if (latestReading.frequency_hz && (latestReading.frequency_hz < 49.9 || latestReading.frequency_hz > 50.1))
       alerts.push('Grid frequency drift noticed outside preferred range.')
-    }
+    const laptopPw = applianceLive.laptop_charger?.power_w || 0
+    const mobilePw = applianceLive.mobile_charger?.power_w || 0
+    if (laptopPw > 60)
+      alerts.push(`Laptop charger drawing ${metricValue(laptopPw, 0)} W — high charging load.`)
+    if (mobilePw > 0 && laptopPw > 0)
+      alerts.push('Both chargers detected simultaneously.')
     return alerts
-  }, [latestReading])
+  }, [latestReading, applianceLive])
 
   const activeAppliances = useMemo(
-    () => applianceTotals.filter((row) => row.power_w > 200).length,
+    () => applianceTotals.filter((row) => row.power_w > 5).length,
     [applianceTotals],
   )
 
   const energyTotal = Number(latestReading?.energy_kwh || 0)
+
+  const nilmMode = nilmStatus?.mode || 'unknown'
+  const nilmBadgeLabel = nilmMode === 'ml' ? 'ML Model Active' : nilmMode === 'heuristic' ? 'Heuristic Mode' : 'NILM Loading'
 
   const streamStatusLabel =
     connectionState === 'live'
@@ -328,31 +368,38 @@ function App() {
 
   const showEmptyState = !isSyncing && filteredReadings.length === 0
   const tableRows = useMemo(() => {
-    if (filteredReadings.length > 0) {
-      return filteredReadings
-    }
-
-    // Fallback so the table still shows incoming stream rows even before a device is selected.
+    if (filteredReadings.length > 0) return filteredReadings
     return meterReadings.slice(-Math.max(limit, 8))
   }, [filteredReadings, meterReadings, limit])
+
+  const bufferPct = useMemo(() => {
+    if (!nilmStatus?.buffers || !selectedDevice) return 0
+    return nilmStatus.buffers[selectedDevice]?.fill_pct || 0
+  }, [nilmStatus, selectedDevice])
 
   return (
     <div className="app-shell">
       <header className="hero">
         <div>
           <p className="eyebrow">NILM Smart Meter Control Room</p>
-          <h1>Live Energy Operations Dashboard</h1>
+          <h1>Live Energy Disaggregation Dashboard</h1>
           <p className="subtext">
-            Synced with backend ingest endpoints and 1-second telemetry cadence from the microprocessor.
+            Real-time appliance-level energy monitoring powered by deep learning (Seq2Seq CNN).
           </p>
           <p className="backend-meta">
             API: <code>{API_BASE}</code>
           </p>
         </div>
-        <div className="live-chip" role="status" aria-live="polite">
-          <span className={`dot ${connectionState === 'live' ? 'on' : 'off'}`}></span>
-          {connectionState === 'live' ? <Wifi size={14} /> : <WifiOff size={14} />}
-          {streamStatusLabel}
+        <div className="hero-badges">
+          <div className="live-chip" role="status" aria-live="polite">
+            <span className={`dot ${connectionState === 'live' ? 'on' : 'off'}`}></span>
+            {connectionState === 'live' ? <Wifi size={14} /> : <WifiOff size={14} />}
+            {streamStatusLabel}
+          </div>
+          <div className={`nilm-badge ${nilmMode}`}>
+            <BrainCircuit size={14} />
+            {nilmBadgeLabel}
+          </div>
         </div>
       </header>
 
@@ -367,16 +414,12 @@ function App() {
               const firstDevice = devices.find(
                 (d) => nextSite === 'all' || d.site_id === nextSite,
               )
-              if (firstDevice) {
-                setSelectedDevice(firstDevice.device_id)
-              }
+              if (firstDevice) setSelectedDevice(firstDevice.device_id)
             }}
           >
             <option value="all">All Sites</option>
             {sites.map((site) => (
-              <option key={site} value={site}>
-                {site}
-              </option>
+              <option key={site} value={site}>{site}</option>
             ))}
           </select>
         </label>
@@ -384,9 +427,7 @@ function App() {
           Device
           <select value={selectedDevice} onChange={(e) => setSelectedDevice(e.target.value)}>
             {deviceOptions.map((device) => (
-              <option key={device.device_id} value={device.device_id}>
-                {device.device_id}
-              </option>
+              <option key={device.device_id} value={device.device_id}>{device.device_id}</option>
             ))}
           </select>
         </label>
@@ -415,12 +456,16 @@ function App() {
         {isSyncing ? <LoaderCircle size={16} className="spin" /> : <Radio size={16} />}
         <span>Sync cadence: every 1 second</span>
         <span>Last update: {formatDateTime(lastSyncedAt)}</span>
+        {bufferPct > 0 && bufferPct < 100 && (
+          <span className="buffer-chip">Buffer: {bufferPct.toFixed(0)}%</span>
+        )}
       </section>
 
+      {/* KPI cards */}
       <section className="kpi-grid">
         <article className="panel kpi">
           <Zap size={18} />
-          <h3>Instant Power</h3>
+          <h3>Aggregate Power</h3>
           <p>{metricValue(latestReading?.power_w, 0)} W</p>
         </article>
         <article className="panel kpi">
@@ -439,6 +484,73 @@ function App() {
           <p>{activeAppliances}</p>
         </article>
       </section>
+
+      {/* NILM Appliance Status Cards */}
+      <section className="nilm-section">
+        <h2 className="section-title"><BrainCircuit size={18} /> NILM Disaggregation</h2>
+        <div className="appliance-cards">
+          {[
+            { id: 'laptop_charger', label: 'Laptop Charger', onThreshold: 5 },
+            { id: 'mobile_charger', label: 'Mobile Charger', onThreshold: 2 },
+            { id: 'other', label: 'Other Loads', onThreshold: 2 },
+          ].map(({ id, label, onThreshold }) => {
+            const data = applianceLive[id]
+            const pw = data?.power_w || 0
+            const isOn = pw > onThreshold
+            return (
+              <article key={id} className={`panel appliance-card ${isOn ? 'appliance-on' : 'appliance-off'}`}>
+                <div className="appliance-header">
+                  <span className="appliance-name">{label}</span>
+                  <span className={`appliance-status ${isOn ? 'on' : 'off'}`}>{isOn ? 'ON' : 'OFF'}</span>
+                </div>
+                <p className="appliance-power">{metricValue(pw, 1)} <span className="unit">W</span></p>
+                <div className="appliance-bar">
+                  <div
+                    className="appliance-bar-fill"
+                    style={{
+                      width: `${Math.min((pw / Math.max(latestReading?.power_w || 1, 1)) * 100, 100)}%`,
+                      backgroundColor: APPLIANCE_COLORS[id] || '#888',
+                    }}
+                  />
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      </section>
+
+      {/* Appliance power timeline */}
+      {applianceTimeline.length > 0 && (
+        <section className="panel chart-card">
+          <h2>Appliance Power Timeline (NILM Output)</h2>
+          <ResponsiveContainer width="100%" height={310}>
+            <AreaChart data={applianceTimeline}>
+              <defs>
+                <linearGradient id="gradLaptop" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f26419" stopOpacity={0.5} />
+                  <stop offset="95%" stopColor="#f26419" stopOpacity={0.05} />
+                </linearGradient>
+                <linearGradient id="gradMobile" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2d9c95" stopOpacity={0.5} />
+                  <stop offset="95%" stopColor="#2d9c95" stopOpacity={0.05} />
+                </linearGradient>
+                <linearGradient id="gradOther" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#5f6caf" stopOpacity={0.5} />
+                  <stop offset="95%" stopColor="#5f6caf" stopOpacity={0.05} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#d7e5e8" />
+              <XAxis dataKey="label" minTickGap={20} />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Area type="monotone" dataKey="laptop_charger" stackId="1" fill="url(#gradLaptop)" stroke="#f26419" strokeWidth={2} name="Laptop Charger (W)" />
+              <Area type="monotone" dataKey="mobile_charger" stackId="1" fill="url(#gradMobile)" stroke="#2d9c95" strokeWidth={2} name="Mobile Charger (W)" />
+              <Area type="monotone" dataKey="other" stackId="1" fill="url(#gradOther)" stroke="#5f6caf" strokeWidth={2} name="Other (W)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </section>
+      )}
 
       <section className="grid-2">
         <article className="panel chart-card">
@@ -491,7 +603,7 @@ function App() {
               <Tooltip />
               <Bar dataKey="power_w" radius={[8, 8, 0, 0]}>
                 {applianceTotals.slice(0, 6).map((row, index) => (
-                  <Cell key={row.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                  <Cell key={row.name} fill={APPLIANCE_COLORS[row.appliance_id] || PIE_COLORS[index % PIE_COLORS.length]} />
                 ))}
               </Bar>
             </BarChart>
@@ -504,7 +616,7 @@ function App() {
             <PieChart>
               <Pie data={applianceTotals.slice(0, 6)} dataKey="power_w" nameKey="name" outerRadius={95} innerRadius={56}>
                 {applianceTotals.slice(0, 6).map((row, index) => (
-                  <Cell key={row.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                  <Cell key={row.name} fill={APPLIANCE_COLORS[row.appliance_id] || PIE_COLORS[index % PIE_COLORS.length]} />
                 ))}
               </Pie>
               <Tooltip />
@@ -561,7 +673,7 @@ function App() {
             ))
           )}
           <p className="meta">
-            Source fields: <code>device_id</code>, <code>meter_id</code>, <code>site_id</code>, <code>voltage_v</code>, <code>current_a</code>, <code>power_w</code>, <code>energy_kwh</code>, <code>frequency_hz</code>, <code>power_factor</code>.
+            NILM mode: <code>{nilmMode}</code> | Appliances: <code>{(nilmStatus?.appliances || []).join(', ') || 'N/A'}</code>
           </p>
         </article>
       </section>

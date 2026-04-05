@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 from contextlib import asynccontextmanager
@@ -13,7 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
+from .nilm_engine import NILMEngine, DisaggResult
+
 DB_PATH = os.path.join("data", "readings.db")
+MODEL_DIR = os.path.join("models")
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +70,7 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+nilm_engine: NILMEngine | None = None
 
 
 def _utc_now() -> datetime:
@@ -176,6 +183,28 @@ def _insert_disaggregated(
     )
 
 
+def _insert_disagg_result(conn: sqlite3.Connection, r: DisaggResult) -> None:
+    """Persist a DisaggResult from the NILM engine."""
+    conn.execute(
+        """
+        INSERT INTO disaggregated_readings (
+            received_at, device_id, site_id, timestamp,
+            appliance_id, appliance_label, power_w, energy_kwh, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            _utc_now().isoformat(),
+            r.device_id,
+            r.site_id,
+            r.timestamp.isoformat(),
+            r.appliance_id,
+            r.appliance_label,
+            r.power_w,
+            r.energy_kwh,
+        ),
+    )
+
+
 class MeterReading(BaseModel):
     device_id: str = Field(..., description="Unique device identifier.")
     meter_id: str | None = Field(None, description="Meter identifier.")
@@ -250,7 +279,10 @@ class DisaggregatedReadingBatch(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> Iterable[None]:
+    global nilm_engine
     _ensure_db()
+    nilm_engine = NILMEngine(model_dir=MODEL_DIR)
+    log.info("NILM engine initialised in '%s' mode", nilm_engine.mode)
     yield
 
 
@@ -266,14 +298,67 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# NILM engine helper — feed a reading and persist/broadcast any results
+# ---------------------------------------------------------------------------
+
+async def _process_nilm(reading: MeterReading) -> None:
+    if nilm_engine is None:
+        return
+
+    results = nilm_engine.feed(
+        device_id=reading.device_id,
+        timestamp=reading.timestamp or reading.received_at,
+        power_w=reading.power_w,
+        site_id=reading.site_id,
+    )
+
+    if not results:
+        return
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            for r in results:
+                _insert_disagg_result(conn, r)
+    except sqlite3.Error:
+        log.exception("Failed to persist disaggregation results")
+
+    for r in results:
+        await manager.broadcast({
+            "type": "disaggregation",
+            "device_id": r.device_id,
+            "site_id": r.site_id,
+            "timestamp": r.timestamp.isoformat(),
+            "received_at": _utc_now().isoformat(),
+            "appliance_id": r.appliance_id,
+            "appliance_label": r.appliance_label,
+            "power_w": r.power_w,
+            "energy_kwh": r.energy_kwh,
+        })
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints
+# ---------------------------------------------------------------------------
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/v1/nilm/status")
+def nilm_status() -> dict[str, Any]:
+    """Return current NILM engine state (model mode, buffer fill, appliances)."""
+    if nilm_engine is None:
+        return {"mode": "unavailable", "appliances": [], "buffers": {}}
+    return nilm_engine.status()
+
+
 def _reading_to_broadcast(reading: MeterReading) -> dict[str, Any]:
     """Serialise a MeterReading to a JSON-friendly dict for broadcasting."""
     return {
+        "type": "meter",
         "received_at": reading.received_at.isoformat(),
         "device_id": reading.device_id,
         "meter_id": reading.meter_id,
@@ -299,6 +384,9 @@ async def ingest_reading(reading: MeterReading) -> dict[str, Any]:
     # Broadcast to all real-time subscribers (WebSocket + SSE)
     await manager.broadcast(_reading_to_broadcast(reading))
 
+    # Feed into NILM disaggregation engine
+    await _process_nilm(reading)
+
     return {"status": "stored", "received_at": reading.received_at.isoformat()}
 
 
@@ -311,9 +399,9 @@ async def ingest_batch(payload: MeterReadingBatch) -> dict[str, Any]:
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail="db_write_failed") from exc
 
-    # Broadcast every reading in the batch
     for reading in payload.readings:
         await manager.broadcast(_reading_to_broadcast(reading))
+        await _process_nilm(reading)
 
     return {"status": "stored", "count": len(payload.readings)}
 
@@ -430,8 +518,6 @@ async def ws_readings(ws: WebSocket) -> None:
     """WebSocket endpoint – frontend connects here to receive live readings."""
     await manager.ws_connect(ws)
     try:
-        # Keep the connection alive; we only push data, but we need to
-        # consume incoming frames so the connection doesn't close.
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
