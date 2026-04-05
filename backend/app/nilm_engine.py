@@ -2,8 +2,9 @@
 Real-time NILM disaggregation engine.
 
 Buffers incoming aggregate power readings and uses power-signature heuristics
-(or a trained CNN model when available) to classify and disaggregate per-appliance
-consumption.
+(or a trained NNAN model when available) to classify and disaggregate per-appliance
+consumption.  The NNAN model uses progressive residual learning with Inception-based
+feature extraction and LSTM temporal modelling (sequence-to-point inference).
 
 Tuned for live demo with laptop charger (~30-90 W) and mobile charger (~5-25 W).
 """

@@ -1,5 +1,5 @@
 """
-Train the NILM Seq2Seq CNN model on UK-DALE preprocessed data.
+Train the NNAN (Progressive Multi-Appliance Neural Network) on UK-DALE data.
 
 Produces ``models/best_model_both.pth`` ready for the inference engine.
 
@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 
 # Ensure the app package is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from app.nilm_model import Seq2PointCNN
+from app.nilm_model import NNAN
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -39,8 +39,9 @@ NUM_EPOCHS = 100
 PATIENCE = 15
 DROPOUT_RATE = 0.2
 
-CONV_FILTERS = [30, 30, 40, 50, 50]
-KERNEL_SIZES = [10, 8, 6, 5, 5]
+# NNAN architecture hyper-parameters
+INCEPTION_CHANNELS = 16
+LSTM_HIDDEN = 64
 
 USE_CLASS_WEIGHTS = True
 ON_THRESHOLD_PHYSICAL = 50  # watts
@@ -51,13 +52,15 @@ SEED = 42
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Dataset — Sequence-to-Point: target is the midpoint of each window
 # ---------------------------------------------------------------------------
 
 class NILMDataset(Dataset):
     def __init__(self, X: np.ndarray, y: np.ndarray) -> None:
         self.X = torch.FloatTensor(X)
-        self.y = torch.FloatTensor(y)
+        # Sequence-to-point: extract midpoint target from full sequence
+        mid = y.shape[1] // 2
+        self.y = torch.FloatTensor(y[:, mid, :])  # (N, num_appliances)
 
     def __len__(self) -> int:
         return len(self.X)
@@ -79,7 +82,7 @@ def train_epoch(model, loader, optimizer, device, on_threshold, on_weight):
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
         optimizer.zero_grad()
-        outputs = model(inputs)
+        outputs = model(inputs)  # (batch, num_appliances)
 
         if USE_CLASS_WEIGHTS:
             weights = torch.where(
@@ -120,7 +123,7 @@ def main() -> None:
     torch.manual_seed(SEED)
 
     print("=" * 70)
-    print("NILM Model Training")
+    print("NNAN Model Training (Progressive Multi-Appliance Neural Network)")
     print("=" * 70)
     print(f"Device: {DEVICE}")
 
@@ -149,6 +152,7 @@ def main() -> None:
     print(f"Appliances: {appliances}")
     print(f"Train: {X_train.shape[0]:,} samples  |  Val: {X_val.shape[0]:,} samples")
     print(f"Seq length: {seq_length}  |  Targets: {num_targets}")
+    print(f"Learning: Sequence-to-Point (midpoint index {seq_length // 2})")
 
     # -- Normalised ON threshold --------------------------------------------
     on_thresholds = []
@@ -168,16 +172,19 @@ def main() -> None:
     )
 
     # -- Model --------------------------------------------------------------
-    model = Seq2PointCNN(
+    model = NNAN(
         seq_length=seq_length,
-        num_targets=num_targets,
-        conv_filters=CONV_FILTERS,
-        kernel_sizes=KERNEL_SIZES,
+        num_appliances=num_targets,
+        inception_channels=INCEPTION_CHANNELS,
+        lstm_hidden=LSTM_HIDDEN,
         dropout_rate=DROPOUT_RATE,
     ).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {total_params:,}\n")
+    print(f"Model parameters: {total_params:,}")
+    print(f"Architecture: NNAN with {num_targets} sub-disaggregators")
+    print(f"  Inception channels: {INCEPTION_CHANNELS} per branch")
+    print(f"  LSTM hidden: {LSTM_HIDDEN}\n")
 
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(

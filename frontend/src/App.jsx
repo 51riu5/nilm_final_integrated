@@ -21,9 +21,12 @@ import {
   BrainCircuit,
   Gauge,
   LoaderCircle,
+  Lightbulb,
   PlugZap,
   Radio,
   ShieldCheck,
+  ToggleLeft,
+  ToggleRight,
   TriangleAlert,
   Wifi,
   WifiOff,
@@ -162,6 +165,7 @@ function App() {
   const [meterReadings, setMeterReadings] = useState([])
   const [disaggregatedReadings, setDisaggregatedReadings] = useState([])
   const [selectedSite, setSelectedSite] = useState('all')
+  const [excludedAppliances, setExcludedAppliances] = useState(new Set())
   const [selectedDevice, setSelectedDevice] = useState('')
   const [limit, setLimit] = useState(DEFAULT_WINDOW)
   const [connectionState, setConnectionState] = useState('connecting')
@@ -376,6 +380,31 @@ function App() {
     if (!nilmStatus?.buffers || !selectedDevice) return 0
     return nilmStatus.buffers[selectedDevice]?.fill_pct || 0
   }, [nilmStatus, selectedDevice])
+
+  // --- What-if analysis ---
+  const toggleAppliance = useCallback((appId) => {
+    setExcludedAppliances((prev) => {
+      const next = new Set(prev)
+      if (next.has(appId)) {
+        next.delete(appId)
+      } else {
+        next.add(appId)
+      }
+      return next
+    })
+  }, [])
+
+  const whatIfData = useMemo(() => {
+    const currentTotal = applianceTotals.reduce((s, a) => s + a.power_w, 0)
+    const projectedTotal = applianceTotals
+      .filter((a) => !excludedAppliances.has(a.appliance_id))
+      .reduce((s, a) => s + a.power_w, 0)
+    const savedW = currentTotal - projectedTotal
+    const reductionPct = currentTotal > 0 ? (savedW / currentTotal) * 100 : 0
+    // Rough cost estimate: ₹8 per kWh, extrapolate current draw over a month
+    const monthlySaved = (savedW / 1000) * 24 * 30 * 8
+    return { currentTotal, projectedTotal, savedW, reductionPct, monthlySaved }
+  }, [applianceTotals, excludedAppliances])
 
   return (
     <div className="app-shell">
@@ -677,6 +706,65 @@ function App() {
           </p>
         </article>
       </section>
+
+      {/* What-If Load Analysis */}
+      {applianceTotals.length > 0 && (
+        <section className="panel whatif-section">
+          <h2><Lightbulb size={18} /> What-If Load Analysis</h2>
+          <p className="whatif-desc">Toggle appliances off to simulate load removal and see projected demand reduction.</p>
+          <div className="whatif-grid">
+            <div className="whatif-toggles">
+              {applianceTotals.map((a) => {
+                const isExcluded = excludedAppliances.has(a.appliance_id)
+                return (
+                  <div key={a.appliance_id} className={`whatif-row ${isExcluded ? 'excluded' : ''}`}>
+                    <button
+                      className="whatif-toggle"
+                      onClick={() => toggleAppliance(a.appliance_id)}
+                      aria-label={`Toggle ${a.name}`}
+                    >
+                      {isExcluded
+                        ? <ToggleLeft size={22} className="toggle-icon off" />
+                        : <ToggleRight size={22} className="toggle-icon on" />}
+                    </button>
+                    <span className="whatif-label">{a.name}</span>
+                    <span className="whatif-pw">{metricValue(a.power_w, 1)} W</span>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="whatif-result">
+              <div className="whatif-bars">
+                <div className="whatif-bar-group">
+                  <span className="whatif-bar-label">Current</span>
+                  <div className="whatif-bar">
+                    <div className="whatif-bar-fill current" style={{ width: '100%' }} />
+                  </div>
+                  <span className="whatif-bar-value">{metricValue(whatIfData.currentTotal, 0)} W</span>
+                </div>
+                <div className="whatif-bar-group">
+                  <span className="whatif-bar-label">Projected</span>
+                  <div className="whatif-bar">
+                    <div
+                      className="whatif-bar-fill projected"
+                      style={{ width: `${whatIfData.currentTotal > 0 ? (whatIfData.projectedTotal / whatIfData.currentTotal) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <span className="whatif-bar-value">{metricValue(whatIfData.projectedTotal, 0)} W</span>
+                </div>
+              </div>
+              {whatIfData.savedW > 0 ? (
+                <div className="whatif-savings">
+                  <p className="whatif-saving-line">🔻 <strong>{metricValue(whatIfData.savedW, 0)} W</strong> reduction ({metricValue(whatIfData.reductionPct, 1)}%)</p>
+                  <p className="whatif-saving-cost">Estimated saving: ~₹{metricValue(whatIfData.monthlySaved, 0)}/month</p>
+                </div>
+              ) : (
+                <p className="whatif-no-change">Toggle off appliances above to simulate load removal.</p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   )
 }
