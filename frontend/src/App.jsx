@@ -422,9 +422,29 @@ function App() {
       .reduce((s, a) => s + a.power_w, 0)
     const savedW = currentTotal - projectedTotal
     const reductionPct = currentTotal > 0 ? (savedW / currentTotal) * 100 : 0
-    // Rough cost estimate: ₹8 per kWh, extrapolate current draw over a month
-    const monthlySaved = (savedW / 1000) * 24 * 30 * 8
-    return { currentTotal, projectedTotal, savedW, reductionPct, monthlySaved }
+    
+    // Time of Use (ToU) Tariffs
+    const rateNormal = 8.0
+    const ratePeak = 12.0
+    const rateOffPeak = 5.0
+    
+    // Cost if completely removed (extrapolated 24/7 at normal rate)
+    const monthlySaved = (savedW / 1000) * 24 * 30 * rateNormal
+    
+    // Cost if simply SHIFTED from peak (e.g. 4 hours) to off-peak
+    // Savings = shifted_kWh * (ratePeak - rateOffPeak)
+    const shiftSavings = (savedW / 1000) * 4 * 30 * (ratePeak - rateOffPeak)
+
+    return { 
+      currentTotal, 
+      projectedTotal, 
+      savedW, 
+      reductionPct, 
+      monthlySaved, 
+      shiftSavings,
+      ratePeak,
+      rateOffPeak
+    }
   }, [applianceTotals, excludedAppliances])
 
   return (
@@ -775,8 +795,21 @@ function App() {
               </div>
               {whatIfData.savedW > 0 ? (
                 <div className="whatif-savings">
-                  <p className="whatif-saving-line">🔻 <strong>{metricValue(whatIfData.savedW, 0)} W</strong> reduction ({metricValue(whatIfData.reductionPct, 1)}%)</p>
-                  <p className="whatif-saving-cost">Estimated saving: ~₹{metricValue(whatIfData.monthlySaved, 0)}/month</p>
+                  <p className="whatif-saving-line">🔻 <strong>{metricValue(whatIfData.savedW, 0)} W</strong> peak reduction ({metricValue(whatIfData.reductionPct, 1)}%)</p>
+                  <p className="whatif-saving-cost">If completely unplugged: Save ~₹{metricValue(whatIfData.monthlySaved, 0)}/month</p>
+                  
+                  <div className="whatif-recommendation" style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: '#ecfdf5', borderRadius: '8px', border: '1px solid #a7f3d0' }}>
+                    <p style={{ margin: '0 0 0.5rem 0', color: '#047857', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Lightbulb size={16} /> Smart Scheduling Recommendation
+                    </p>
+                    <p style={{ margin: 0, fontSize: '0.9rem', color: '#065f46', lineHeight: 1.5 }}>
+                      <strong>Peak (6 PM - 10 PM):</strong> ₹{whatIfData.ratePeak}/kWh <br/>
+                      <strong>Off-Peak (10 PM - 6 AM):</strong> ₹{whatIfData.rateOffPeak}/kWh
+                    </p>
+                    <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem', color: '#065f46' }}>
+                      Can't turn these off permanently? Simply shifting their usage from Peak to Off-Peak hours saves <strong>~₹{metricValue(whatIfData.shiftSavings, 0)}/month</strong> without reducing usage!
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <p className="whatif-no-change">Toggle off appliances above to simulate load removal.</p>
