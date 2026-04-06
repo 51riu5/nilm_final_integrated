@@ -63,6 +63,11 @@ class _DeviceBuffer:
     )
     new_count: int = 0
     site_id: str | None = None
+    
+    # --- Stateful Tracking ---
+    tracked_appliances: dict[str, float] = field(default_factory=dict)
+    last_aggregate: float = 0.0
+    laptop_counter: int = 0
 
 
 class NILMEngine:
@@ -251,74 +256,73 @@ class NILMEngine:
     def _classify_power(
         self, smoothed: float, raw: float, buf: _DeviceBuffer
     ) -> dict[str, float]:
-        """Decompose aggregate power into dynamic laptops and chargers."""
+        """Event-Based Edge Detection Disaggregation"""
+        # If aggregate drops near zero, clear state
         if smoothed <= STANDBY_MAX:
+            buf.tracked_appliances.clear()
+            buf.last_aggregate = smoothed
+            buf.laptop_counter = 0
             return {"other": 0.0}
 
-        alloc = {}
-        mobile = 0.0
-        other = 0.0
+        delta = smoothed - buf.last_aggregate
 
-        # Check recent history for a step that reveals the mobile charger
-        readings = list(buf.readings)
-        has_mobile_baseline = False
-        if len(readings) >= 10:
-            prev_power = np.mean([pw for _, pw in readings[-15:-5]]) if len(readings) >= 15 else 0
-            if MOBILE_MIN <= prev_power <= MOBILE_MAX and smoothed > LAPTOP_MIN:
-                has_mobile_baseline = True
+        # Process Turn ON events (+ step)
+        if delta > 4.0:
+            if MOBILE_MIN <= delta <= MOBILE_MAX:
+                # Phone charger plugged in
+                buf.tracked_appliances["mobile_charger"] = delta
+            elif LAPTOP_MIN <= delta <= LAPTOP_MAX:
+                # Laptop plugged in
+                buf.laptop_counter += 1
+                buf.tracked_appliances[f"laptop_charger_{buf.laptop_counter}"] = delta
+            elif delta > LAPTOP_MAX:
+                # Massive single step - multiple laptops plugged in at once
+                num_laptops = max(1, round(delta / 65.0))
+                per_laptop = delta / num_laptops
+                if per_laptop > 90:
+                    per_laptop = 80.0 # impose realism cap
+                for _ in range(num_laptops):
+                    buf.laptop_counter += 1
+                    buf.tracked_appliances[f"laptop_charger_{buf.laptop_counter}"] = per_laptop
 
-        laptop_unit = 65.0
-        laptop_pws = []
-
-        if smoothed <= MOBILE_MAX:
-            mobile = smoothed
-        elif smoothed <= 44:
-            laptop_pws.append(smoothed)
-        elif smoothed <= LAPTOP_MAX:
-            if has_mobile_baseline:
-                mobile = min(15.0, smoothed * 0.2)
-                laptop_pws.append(smoothed - mobile)
-            else:
-                if smoothed > 55:
-                    mobile = min(12.0, smoothed * 0.18)
-                    laptop_pws.append(smoothed - mobile)
-                else:
-                    laptop_pws.append(smoothed)
-        else:
-            residual = smoothed
-            # Optional mobile charger extracted first
-            if has_mobile_baseline or smoothed > 85.0:
-                mobile = 12.0
-                residual -= mobile
-
-            num_laptops = max(1, round(residual / laptop_unit))
-            per_laptop = residual / num_laptops
+        # Process Turn OFF events (- step)
+        elif delta < -4.0:
+            drop = abs(delta)
+            # Match the drop against currently active devices
+            best_match = None
+            min_diff = 999.0
+            for app_id, pw in list(buf.tracked_appliances.items()):
+                diff = abs(pw - drop)
+                if diff < 10.0 and diff < min_diff:
+                    best_match = app_id
+                    min_diff = diff
             
-            if per_laptop > 90.0:
-                # Overflow into other, meaning additional non-laptop loads
-                per_laptop = 80.0
-                for _ in range(num_laptops):
-                    laptop_pws.append(per_laptop)
-                    residual -= per_laptop
-                other = residual
+            if best_match:
+                del buf.tracked_appliances[best_match]
             else:
-                for _ in range(num_laptops):
-                    laptop_pws.append(per_laptop)
+                # Unmatched drop, scale everyone down equally to maintain proportions
+                scale = max(0.0, smoothed / (buf.last_aggregate + 1e-8))
+                for k in buf.tracked_appliances:
+                    buf.tracked_appliances[k] *= scale
 
-        # Build dynamic dictionary consistently using indexed IDs
-        for i, pw in enumerate(laptop_pws):
-            alloc[f"laptop_charger_{i+1}"] = pw
-                
-        alloc["mobile_charger"] = mobile
-        alloc["other"] = other
+        buf.last_aggregate = smoothed
 
+        # Map current state to dict
+        alloc = dict(buf.tracked_appliances)
         accounted = sum(alloc.values())
+        
+        # Drift continuous correction (ensures active slices perfectly align with floating meter noise)
         diff = raw - accounted
-        if diff > 1:
-            alloc["other"] += diff
-        elif diff < -1:
-            scale = raw / (accounted + 1e-8)
-            for k in alloc:
-                alloc[k] *= scale
+        if diff > 1.0:
+            alloc["other"] = diff
+        elif diff < -1.0:
+            # Over-allocated (meter dropped slightly but no sharp step)
+            alloc["other"] = 0.0
+            if accounted > 0:
+                scale = raw / accounted
+                for k in alloc:
+                    alloc[k] *= scale
+        else:
+            alloc["other"] = max(0.0, diff)
 
         return {k: max(v, 0.0) for k, v in alloc.items()}
