@@ -1,0 +1,63 @@
+{
+  "dataset": "UK-DALE",
+  "house": 2,
+  "appliances": [
+    "kettle",
+    "fridge"
+  ],
+  "train_period": {
+    "start": "2013-05-01 00:00:00",
+    "end": "2013-07-31 23:59:59"
+  },
+  "sample_period": 6,
+  "seq_length": 599,
+  "stride": 128,
+  "normalization": {
+    "mains": {
+      "mean": 295.6943359375,
+      "std": 461.5776062111719
+    },
+    "appliances": {
+      "kettle": {
+        "mean": 4.281732082366943,
+        "std": 110.55345154808593
+      },
+      "fridge": {
+        "mean": 5.384398460388184,
+        "std": 21.445499430166016
+      }
+    },
+    "normalize_mains": true,
+    "normalize_targets": true,
+    "use_reference": false
+  },
+  "use_reference_norm": false,
+  "reference_implementation": "github.com/I-S-U-Load-Monitoring-Application/Nilm-energy-disaggregation",
+  "reference_accuracy": "100% test accuracy on kettle (UK-DALE House 2)",
+  "train_samples": 8257,
+  "val_samples": 2065,
+  "created_date": "2026-01-19T15:36:43.817884",
+  "data_shapes": {
+    "X_train": [
+      8257,
+      599,
+      1
+    ],
+    "y_train": [
+      8257,
+      599,
+      2
+    ],
+    "X_val": [
+      2065,
+      599,
+      1
+    ],
+    "y_val": [
+      2065,
+      599,
+      2
+    ]
+  },
+  "notes": "Updated to match reference seq2point implementation with appliance-specific normalization"
+}

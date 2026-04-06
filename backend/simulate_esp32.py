@@ -13,7 +13,7 @@ import random
 import time
 import urllib.request
 
-API = "http://localhost:8000/api/v1/readings"
+API = "https://nilm-api.onrender.com/api/v1/readings"
 
 def send(power_w, voltage=230.0, freq=50.0, pf=0.95):
     noise_v = random.uniform(-1.5, 1.5)
