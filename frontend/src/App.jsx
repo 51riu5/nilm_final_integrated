@@ -413,7 +413,7 @@ function App() {
           <p className="eyebrow">NILM Smart Meter Control Room</p>
           <h1>Live Energy Disaggregation Dashboard</h1>
           <p className="subtext">
-            Real-time appliance-level energy monitoring powered by deep learning (Seq2Seq CNN).
+            Real-time appliance-level energy monitoring powered by deep learning (Seq2Point CNN).
           </p>
           <p className="backend-meta">
             API: <code>{API_BASE}</code>
