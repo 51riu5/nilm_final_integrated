@@ -195,7 +195,19 @@ From backend directory with virtual environment active:
 pytest tests -v
 ```
 
-## 8) Production Notes
+## 8) Deployment to Render
+
+This repository is pre-configured for full-stack deployment on [Render](https://render.com) using the included `render.yaml` Blueprint.
+
+1. Push this repository to GitHub/GitLab.
+2. Sign in to Render and navigate to **Blueprints**.
+3. Click **New Blueprint Instance** and connect your repository.
+4. Render will automatically detect the configuration in `render.yaml` and provision two services:
+   - **nilm-api**: A Python Web Service for the FastAPI backend. It installs a lightweight, CPU-only version of PyTorch to ensure it works smoothly on the free tier.
+   - **nilm-dashboard**: A Static Site for the React + Vite frontend, which automatically discovers the API URL during its build step.
+5. **Important for SPA Routing**: In the Render Dashboard, go to your new `nilm-dashboard` Static Site settings, select **Redirects/Rewrites**, and add a rewrite rule to redirect all traffic (`/*`) to `/index.html` (Action: Rewrite).
+
+## 9) Production Notes
 
 - Replace wildcard CORS with specific frontend origins.
 - Run behind a process manager/reverse proxy.
