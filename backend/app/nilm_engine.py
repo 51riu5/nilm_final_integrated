@@ -287,8 +287,8 @@ class NILMEngine:
         else:
             residual = smoothed
             # Optional mobile charger extracted first
-            if has_mobile_baseline or (smoothed % laptop_unit > 5 and smoothed % laptop_unit < 25):
-                mobile = max(10.0, min(15.0, residual % laptop_unit))
+            if has_mobile_baseline or smoothed > 85.0:
+                mobile = 12.0
                 residual -= mobile
 
             num_laptops = max(1, round(residual / laptop_unit))
@@ -305,12 +305,9 @@ class NILMEngine:
                 for _ in range(num_laptops):
                     laptop_pws.append(per_laptop)
 
-        # Build dynamic dictionary
-        if len(laptop_pws) == 1:
-            alloc["laptop_charger"] = laptop_pws[0]
-        else:
-            for i, pw in enumerate(laptop_pws):
-                alloc[f"laptop_charger_{i+1}"] = pw
+        # Build dynamic dictionary consistently using indexed IDs
+        for i, pw in enumerate(laptop_pws):
+            alloc[f"laptop_charger_{i+1}"] = pw
                 
         alloc["mobile_charger"] = mobile
         alloc["other"] = other

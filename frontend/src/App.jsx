@@ -131,15 +131,20 @@ function metricValue(value, digits = 2) {
 }
 
 function buildApplianceSnapshot(rows) {
-  const latestPerAppliance = new Map()
+  if (!rows || rows.length === 0) return []
+  
+  let maxTs = 0
   rows.forEach((row) => {
+    const ts = toEpoch(row.timestamp || row.received_at)
+    if (ts > maxTs) maxTs = ts
+  })
+
+  const latestRows = rows.filter(r => toEpoch(r.timestamp || r.received_at) === maxTs)
+  
+  const latestPerAppliance = new Map()
+  latestRows.forEach((row) => {
     const key = `${row.device_id}:${row.appliance_id}`
-    const current = latestPerAppliance.get(key)
-    const rowTs = toEpoch(row.timestamp || row.received_at)
-    const currentTs = current ? toEpoch(current.timestamp || current.received_at) : 0
-    if (!current || rowTs >= currentTs) {
-      latestPerAppliance.set(key, row)
-    }
+    latestPerAppliance.set(key, row)
   })
 
   return [...latestPerAppliance.values()]
@@ -154,15 +159,24 @@ function buildApplianceSnapshot(rows) {
 
 function buildApplianceTimeline(rows) {
   const byTimestamp = new Map()
+  const allKnownIds = new Set(rows.map(r => r.appliance_id).filter(Boolean))
+
   rows.forEach((row) => {
     const ts = row.timestamp || row.received_at
     if (!ts) return
     const key = ts
-    const entry = byTimestamp.get(key) || { timestamp: ts, label: formatTime(ts) }
+    
+    if (!byTimestamp.has(key)) {
+      const init = { timestamp: ts, label: formatTime(ts) }
+      for (const id of allKnownIds) init[id] = 0 // Zero-fill to prevent chart floating
+      byTimestamp.set(key, init)
+    }
+
+    const entry = byTimestamp.get(key)
     const appId = row.appliance_id || 'unknown'
     entry[appId] = Number(row.power_w || 0)
-    byTimestamp.set(key, entry)
   })
+  
   return [...byTimestamp.values()].sort(
     (a, b) => toEpoch(a.timestamp) - toEpoch(b.timestamp),
   ).slice(-120)
