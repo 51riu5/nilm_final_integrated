@@ -47,6 +47,13 @@ const APPLIANCE_COLORS = {
   other: '#5f6caf',
 }
 
+const getApplianceColor = (id, index = 0) => {
+  if (APPLIANCE_COLORS[id]) return APPLIANCE_COLORS[id]
+  if (id.startsWith('laptop')) return ['#f26419', '#f2a541', '#d7263d', '#dc2626'][index % 4]
+  if (id.startsWith('mobile')) return ['#2d9c95', '#0f766e', '#135d66'][index % 3]
+  return PIE_COLORS[index % PIE_COLORS.length]
+}
+
 function buildWsUrl(apiBaseUrl) {
   try {
     const parsed = new URL(apiBaseUrl)
@@ -518,14 +525,13 @@ function App() {
       <section className="nilm-section">
         <h2 className="section-title"><BrainCircuit size={18} /> NILM Disaggregation</h2>
         <div className="appliance-cards">
-          {[
-            { id: 'laptop_charger', label: 'Laptop Charger', onThreshold: 5 },
-            { id: 'mobile_charger', label: 'Mobile Charger', onThreshold: 2 },
-            { id: 'other', label: 'Other Loads', onThreshold: 2 },
-          ].map(({ id, label, onThreshold }) => {
-            const data = applianceLive[id]
-            const pw = data?.power_w || 0
-            const isOn = pw > onThreshold
+          {applianceTotals.map((a, i) => {
+            const id = a.appliance_id;
+            const label = a.name;
+            const pw = a.power_w;
+            // Only consider it "ON" if drawing > 2W
+            const isOn = pw > 2;
+            const color = getApplianceColor(id, i);
             return (
               <article key={id} className={`panel appliance-card ${isOn ? 'appliance-on' : 'appliance-off'}`}>
                 <div className="appliance-header">
@@ -538,7 +544,7 @@ function App() {
                     className="appliance-bar-fill"
                     style={{
                       width: `${Math.min((pw / Math.max(latestReading?.power_w || 1, 1)) * 100, 100)}%`,
-                      backgroundColor: APPLIANCE_COLORS[id] || '#888',
+                      backgroundColor: color,
                     }}
                   />
                 </div>
@@ -554,28 +560,28 @@ function App() {
           <h2>Appliance Power Timeline (NILM Output)</h2>
           <ResponsiveContainer width="100%" height={310}>
             <AreaChart data={applianceTimeline}>
-              <defs>
-                <linearGradient id="gradLaptop" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#f26419" stopOpacity={0.5} />
-                  <stop offset="95%" stopColor="#f26419" stopOpacity={0.05} />
-                </linearGradient>
-                <linearGradient id="gradMobile" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#2d9c95" stopOpacity={0.5} />
-                  <stop offset="95%" stopColor="#2d9c95" stopOpacity={0.05} />
-                </linearGradient>
-                <linearGradient id="gradOther" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#5f6caf" stopOpacity={0.5} />
-                  <stop offset="95%" stopColor="#5f6caf" stopOpacity={0.05} />
-                </linearGradient>
-              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#d7e5e8" />
               <XAxis dataKey="label" minTickGap={20} />
               <YAxis />
               <Tooltip />
               <Legend />
-              <Area type="monotone" dataKey="laptop_charger" stackId="1" fill="url(#gradLaptop)" stroke="#f26419" strokeWidth={2} name="Laptop Charger (W)" />
-              <Area type="monotone" dataKey="mobile_charger" stackId="1" fill="url(#gradMobile)" stroke="#2d9c95" strokeWidth={2} name="Mobile Charger (W)" />
-              <Area type="monotone" dataKey="other" stackId="1" fill="url(#gradOther)" stroke="#5f6caf" strokeWidth={2} name="Other (W)" />
+              {applianceTotals.map((a, i) => {
+                 const id = a.appliance_id;
+                 const color = getApplianceColor(id, i);
+                 return (
+                   <Area 
+                     key={id} 
+                     type="monotone" 
+                     dataKey={id} 
+                     stackId="1" 
+                     fill={color} 
+                     fillOpacity={0.5} 
+                     stroke={color} 
+                     strokeWidth={2} 
+                     name={`${a.name} (W)`} 
+                   />
+                 )
+              })}
             </AreaChart>
           </ResponsiveContainer>
         </section>
@@ -630,11 +636,11 @@ function App() {
               <XAxis dataKey="name" />
               <YAxis />
               <Tooltip />
-              <Bar dataKey="power_w" radius={[8, 8, 0, 0]}>
-                {applianceTotals.slice(0, 6).map((row, index) => (
-                  <Cell key={row.name} fill={APPLIANCE_COLORS[row.appliance_id] || PIE_COLORS[index % PIE_COLORS.length]} />
-                ))}
-              </Bar>
+               <Bar dataKey="power_w" radius={[8, 8, 0, 0]}>
+                 {applianceTotals.slice(0, 6).map((row, index) => (
+                   <Cell key={row.name} fill={getApplianceColor(row.appliance_id, index)} />
+                 ))}
+               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </article>
@@ -643,11 +649,11 @@ function App() {
           <h2>Load Share Snapshot</h2>
           <ResponsiveContainer width="100%" height={300}>
             <PieChart>
-              <Pie data={applianceTotals.slice(0, 6)} dataKey="power_w" nameKey="name" outerRadius={95} innerRadius={56}>
-                {applianceTotals.slice(0, 6).map((row, index) => (
-                  <Cell key={row.name} fill={APPLIANCE_COLORS[row.appliance_id] || PIE_COLORS[index % PIE_COLORS.length]} />
-                ))}
-              </Pie>
+               <Pie data={applianceTotals.slice(0, 6)} dataKey="power_w" nameKey="name" outerRadius={95} innerRadius={56}>
+                 {applianceTotals.slice(0, 6).map((row, index) => (
+                   <Cell key={row.name} fill={getApplianceColor(row.appliance_id, index)} />
+                 ))}
+               </Pie>
               <Tooltip />
             </PieChart>
           </ResponsiveContainer>

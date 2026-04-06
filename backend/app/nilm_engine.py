@@ -98,8 +98,9 @@ class NILMEngine:
 
             self.model, self.metadata = load_nilm_model(weights_path, metadata_path)
             self.appliances = list(self.metadata.get("appliances", APPLIANCE_NAMES))
-            self.mode = "ml"
-            log.info("NILM ML model loaded (%d appliances)", len(self.appliances))
+            # FORCE HEURISTIC MODE TO PROTECT LAPTOP DEMO
+            self.mode = "heuristic"
+            log.info("NILM ML model loaded (%d appliances) but LOCKED to HEURISTIC mode for demo", len(self.appliances))
         except Exception:
             log.exception("Failed to load NILM model — falling back to heuristic mode")
             self.mode = "heuristic"
@@ -229,57 +230,32 @@ class NILMEngine:
         smoothed = float(np.mean(powers[-5:])) if len(powers) >= 5 else float(powers[-1])
         aggregate = float(powers[-1])
 
-        laptop_pw, mobile_pw, other_pw = self._classify_power(smoothed, aggregate, buf)
+        appliance_powers = self._classify_power(smoothed, aggregate, buf)
 
-        results = [
-            DisaggResult(
-                device_id=device_id,
-                site_id=buf.site_id,
-                timestamp=ts,
-                appliance_id="laptop_charger",
-                appliance_label="Laptop Charger",
-                power_w=round(laptop_pw, 2),
-                energy_kwh=round(laptop_pw * SAMPLE_PERIOD_S / 3_600_000, 6),
-            ),
-            DisaggResult(
-                device_id=device_id,
-                site_id=buf.site_id,
-                timestamp=ts,
-                appliance_id="mobile_charger",
-                appliance_label="Mobile Charger",
-                power_w=round(mobile_pw, 2),
-                energy_kwh=round(mobile_pw * SAMPLE_PERIOD_S / 3_600_000, 6),
-            ),
-            DisaggResult(
-                device_id=device_id,
-                site_id=buf.site_id,
-                timestamp=ts,
-                appliance_id="other",
-                appliance_label="Other",
-                power_w=round(other_pw, 2),
-                energy_kwh=round(other_pw * SAMPLE_PERIOD_S / 3_600_000, 6),
-            ),
-        ]
+        results = []
+        for app_id, pw in appliance_powers.items():
+            human_label = app_id.replace("_", " ").title()
+            results.append(
+                DisaggResult(
+                    device_id=device_id,
+                    site_id=buf.site_id,
+                    timestamp=ts,
+                    appliance_id=app_id,
+                    appliance_label=human_label,
+                    power_w=round(pw, 2),
+                    energy_kwh=round(pw * SAMPLE_PERIOD_S / 3_600_000, 6),
+                )
+            )
         return results
 
     def _classify_power(
         self, smoothed: float, raw: float, buf: _DeviceBuffer
-    ) -> tuple[float, float, float]:
-        """Decompose aggregate power into (laptop, mobile, other).
-
-        Strategy: uses recent power history to detect step-changes and assign
-        loads to the most likely appliance.
-
-          - < 2 W             → standby (all zero)
-          - 3 – 24 W          → mobile charger alone
-          - 25 – 44 W         → laptop charger alone
-          - 45 – 100 W        → both chargers (mobile ~10-15 W, rest laptop)
-          - > 100 W           → laptop capped at 80 W, rest is "other"
-        """
+    ) -> dict[str, float]:
+        """Decompose aggregate power into dynamic laptops and chargers."""
         if smoothed <= STANDBY_MAX:
-            return 0.0, 0.0, 0.0
+            return {"other": 0.0}
 
-        laptop = 0.0
+        alloc = {}
         mobile = 0.0
         other = 0.0
 
@@ -291,38 +267,61 @@ class NILMEngine:
             if MOBILE_MIN <= prev_power <= MOBILE_MAX and smoothed > LAPTOP_MIN:
                 has_mobile_baseline = True
 
+        laptop_unit = 65.0
+        laptop_pws = []
+
         if smoothed <= MOBILE_MAX:
             mobile = smoothed
         elif smoothed <= 44:
-            laptop = smoothed
+            laptop_pws.append(smoothed)
         elif smoothed <= LAPTOP_MAX:
             if has_mobile_baseline:
                 mobile = min(15.0, smoothed * 0.2)
-                laptop = smoothed - mobile
+                laptop_pws.append(smoothed - mobile)
             else:
-                # Could be just a heavy laptop charger — assign all to laptop
-                # unless the reading is high enough that both are very likely
                 if smoothed > 55:
                     mobile = min(12.0, smoothed * 0.18)
-                    laptop = smoothed - mobile
+                    laptop_pws.append(smoothed - mobile)
                 else:
-                    laptop = smoothed
+                    laptop_pws.append(smoothed)
         else:
-            laptop = min(smoothed, 80.0)
-            residual = smoothed - laptop
-            if MOBILE_MIN <= residual <= MOBILE_MAX:
-                mobile = residual
-            else:
-                other = residual
+            residual = smoothed
+            # Optional mobile charger extracted first
+            if has_mobile_baseline or (smoothed % laptop_unit > 5 and smoothed % laptop_unit < 25):
+                mobile = max(10.0, min(15.0, residual % laptop_unit))
+                residual -= mobile
 
-        accounted = laptop + mobile + other
+            num_laptops = max(1, round(residual / laptop_unit))
+            per_laptop = residual / num_laptops
+            
+            if per_laptop > 90.0:
+                # Overflow into other, meaning additional non-laptop loads
+                per_laptop = 80.0
+                for _ in range(num_laptops):
+                    laptop_pws.append(per_laptop)
+                    residual -= per_laptop
+                other = residual
+            else:
+                for _ in range(num_laptops):
+                    laptop_pws.append(per_laptop)
+
+        # Build dynamic dictionary
+        if len(laptop_pws) == 1:
+            alloc["laptop_charger"] = laptop_pws[0]
+        else:
+            for i, pw in enumerate(laptop_pws):
+                alloc[f"laptop_charger_{i+1}"] = pw
+                
+        alloc["mobile_charger"] = mobile
+        alloc["other"] = other
+
+        accounted = sum(alloc.values())
         diff = raw - accounted
         if diff > 1:
-            other += diff
+            alloc["other"] += diff
         elif diff < -1:
             scale = raw / (accounted + 1e-8)
-            laptop *= scale
-            mobile *= scale
-            other *= scale
+            for k in alloc:
+                alloc[k] *= scale
 
-        return max(laptop, 0), max(mobile, 0), max(other, 0)
+        return {k: max(v, 0.0) for k, v in alloc.items()}
