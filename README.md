@@ -214,7 +214,7 @@ This repository is pre-configured for full-stack deployment on [Render](https://
 - Move from SQLite to a production DB when scaling.
 - Add authentication and rate limiting for public deployments.
 
-## 9) Common Issues and Fixes
+## 10) Common Issues and Fixes
 
 ### Frontend cannot reach backend
 
@@ -233,7 +233,7 @@ This repository is pre-configured for full-stack deployment on [Render](https://
 - Upgrade pip first: python -m pip install --upgrade pip
 - Recreate virtual environment and reinstall requirements.
 
-## 10) Hardware Integration (Optional)
+## 11) Hardware Integration (Optional)
 
 If using real ESP32 + PZEM:
 
