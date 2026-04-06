@@ -7,8 +7,7 @@ const char* ssid = "Johan";
 const char* password = "12345678";
 
 // Your backend URL (CHANGE THIS to your deployed Render URL)
-// Example: const char* serverName = "https://nilm-api.onrender.com/api/v1/readings";
-const char* serverName = "http://172.20.10.4:8000/api/v1/readings";
+const char* serverName = "https://nilm-api.onrender.com/api/v1/readings";
 
 // PZEM setup (ESP32 XIAO C3)
 PZEM004Tv30 pzem(Serial1, 9, 10); // RX=9, TX=10
